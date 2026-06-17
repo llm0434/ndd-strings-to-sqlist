@@ -1,14 +1,14 @@
 name: Build NDD Plugin (StringsToSqlList)
 
 # 触发条件：推送到 main/master、或在网页上手动点 "Run workflow"
-on:
+于:
   push:
-    branches: [ main, master ]
+    分支: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-2019
+    runs-on: windows-latest
     defaults:
       run:
         shell: cmd
