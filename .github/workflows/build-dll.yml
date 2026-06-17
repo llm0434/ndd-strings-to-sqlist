@@ -1,9 +1,9 @@
 name: Build NDD Plugin (StringsToSqlList)
 
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
+于:
+  推送:
+    分支: [ main, master ]
+  工作流程调度:
 
 jobs:
   build:
@@ -28,18 +28,56 @@ jobs:
       - name: Auto-detect vcvars64 & download QScintilla
         shell: pwsh
         run: |
-          $vsPaths = @(
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
-            "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat",
-            "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-          )
-          $vcvars = $vsPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $vcvars) { Write-Error "vcvars64.bat not found"; exit 1 }
-          Write-Host "vsvars64.bat: $vcvars"
+          # 首先尝试使用 vswhere 定位安装路径
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vcvars = $null
+
+          if (Test-Path $vswhere) {
+            try {
+              $instPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+              if ($instPath) {
+                $candidate = Join-Path $instPath 'VC\Auxiliary\Build\vcvars64.bat'
+                if (Test-Path $candidate) { $vcvars = $candidate }
+              }
+            } catch {
+              Write-Host "vswhere failed or returned nothing: $_"
+            }
+          } else {
+            Write-Host "vswhere not found at $vswhere"
+          }
+
+          # 回退查找：在常见安装目录递归查找 vcvars64.bat
+          if (-not $vcvars) {
+            $searchRoots = @(
+              'C:\Program Files (x86)\Microsoft Visual Studio',
+              'C:\Program Files\Microsoft Visual Studio'
+            )
+            foreach ($root in $searchRoots) {
+              if (Test-Path $root) {
+                Write-Host "Searching for vcvars64.bat under $root ..."
+                $found = Get-ChildItem -Path $root -Recurse -Filter 'vcvars64.bat' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($found) { $vcvars = $found.FullName; break }
+              }
+            }
+          }
+
+          # 最终失败时给出清晰错误
+          if (-not $vcvars) {
+            Write-Error "vcvars64.bat not found. Ensure Visual Studio with C++ build tools is present on this runner."
+            exit 1
+          }
+
+          Write-Host "vcvars64.bat found at: $vcvars"
+
+          # 导出到 GITHUB_ENV，后续 cmd 步骤可通过 %VCVARS_PATH% 使用
+          "VCVARS_PATH=$vcvars" | Add-Content -Path $env:GITHUB_ENV
+
+          # QScintilla 下载与解压（保留原流程）
           $url = "https://www.riverbankcomputing.com/static/Downloads/QScintilla/2.14.1/QScintilla_src-2.14.1.tar.gz"
           Invoke-WebRequest -Uri $url -OutFile qscintilla.tar.gz -UseBasicParsing -TimeoutSec 120
           tar xzf qscintilla.tar.gz
-          "VCVARS_PATH=$vcvars" | Add-Content -Path $env:GITHUB_ENV
+
+          # 导出 QTDIR（与原来一致）
           "QTDIR=C:\Qt\5.15.2\msvc2019_64" | Add-Content -Path $env:GITHUB_ENV
           Get-ChildItem -Recurse QScintilla_src-2.14.1 -Filter *.pro
 
