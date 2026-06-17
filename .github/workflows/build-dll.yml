@@ -28,7 +28,6 @@ jobs:
       - name: Auto-detect vcvars64 & download QScintilla
         shell: pwsh
         run: |
-          # 找到 VS vcvars64.bat
           $vsPaths = @(
             "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
             "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat",
@@ -37,28 +36,20 @@ jobs:
           $vcvars = $vsPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $vcvars) { Write-Error "vcvars64.bat not found"; exit 1 }
           Write-Host "vsvars64.bat: $vcvars"
-
-          # 下载并解压 QScintilla
           $url = "https://www.riverbankcomputing.com/static/Downloads/QScintilla/2.14.1/QScintilla_src-2.14.1.tar.gz"
           Invoke-WebRequest -Uri $url -OutFile qscintilla.tar.gz -UseBasicParsing -TimeoutSec 120
           tar xzf qscintilla.tar.gz
-
-          # 写出后续步骤要用的变量到 env 文件
           "VCVARS_PATH=$vcvars" | Add-Content -Path $env:GITHUB_ENV
           "QTDIR=C:\Qt\5.15.2\msvc2019_64" | Add-Content -Path $env:GITHUB_ENV
-
-          # 验证 QScintilla 的 pro 文件位置
           Get-ChildItem -Recurse QScintilla_src-2.14.1 -Filter *.pro
 
-      - name: Build QScintilla → lib & DLL
+      - name: Build QScintilla
         shell: cmd
         run: |
-          REM ---- 整个脚本在单个 cmd 进程中执行，环境变量可传递 ----
           call "%VCVARS_PATH%"
           set PATH=%QTDIR%\bin;%PATH%
           set INCLUDE=%QTDIR%\include;%INCLUDE%
           set LIB=%QTDIR%\lib;%LIB%
-
           cd QScintilla_src-2.14.1\Qt4Qt5
           qmake qscintilla.pro
           if errorlevel 1 exit 1
@@ -66,6 +57,20 @@ jobs:
           if errorlevel 1 exit 1
           nmake install
           if errorlevel 1 exit 1
+
+      - name: Diagnose — where did QScintilla install to?
+        shell: pwsh
+        run: |
+          Write-Host "=== QTDIR/include/Qsci ==="
+          if (Test-Path "$env:QTDIR\include\Qsci") { Get-ChildItem "$env:QTDIR\include\Qsci" -Name | Select-Object -First 15 } else { Write-Host "(directory not found)" }
+          Write-Host "=== QTDIR/lib (looking for qscintilla lib) ==="
+          Get-ChildItem -Recurse -Path $env:QTDIR\lib -Filter "*qscintilla*"
+          Write-Host "=== QTDIR/bin (looking for qscintilla dll) ==="
+          Get-ChildItem -Recurse -Path $env:QTDIR\bin -Filter "*qscintilla*"
+          Write-Host "=== QScintilla build output folders ==="
+          Get-ChildItem -Recurse -Path QScintilla_src-2.14.1 -Filter "*.lib"
+          Get-ChildItem -Recurse -Path QScintilla_src-2.14.1 -Filter "*.dll"
+          Get-ChildItem -Recurse -Path QScintilla_src-2.14.1 -Filter "*.h" | Select-Object -First 10 FullName
 
       - name: Build plugin DLL
         shell: cmd
@@ -75,15 +80,36 @@ jobs:
           set INCLUDE=%QTDIR%\include;%INCLUDE%
           set LIB=%QTDIR%\lib;%LIB%
 
+          REM ---- 如果 QScintilla 的头文件没装到 %QTDIR%\include\Qsci，
+          REM      下面会自动查找其实际位置并附加到 INCLUDEPATH ----
+          if exist "%QTDIR%\include\Qsci\qsciscintilla.h" goto :have_qscintilla
+
+          REM 尝试在源码树里找头文件并复制过来
+          for /f "delims=" %%i in ('dir /s /b QScintilla_src-2.14.1\qsciscintilla.h 2^>nul') do set QSCI_H=%%i
+          if not "%QSCI_H%"=="" (
+            for %%d in ("%QSCI_H%") do set QSCI_DIR=%%~dpd
+            echo Auto-found QScintilla headers at: %QSCI_DIR%
+            if not exist "%QTDIR%\include\Qsci" mkdir "%QTDIR%\include\Qsci"
+            copy /y "%QSCI_DIR%*.h" "%QTDIR%\include\Qsci\"
+          )
+
+          REM 同样查找 .lib 并复制到 Qt 树
+          for /f "delims=" %%i in ('dir /s /b QScintilla_src-2.14.1\*.lib 2^>nul') do set QSCI_LIB=%%i
+          if not "%QSCI_LIB%"=="" (
+            echo Auto-found QScintilla lib: %QSCI_LIB%
+            copy /y "%QSCI_LIB%" "%QTDIR%\lib\"
+          )
+
+          :have_qscintilla
           qmake ndd-strings-to-sqlist.pro
           if errorlevel 1 exit 1
           nmake release
           if errorlevel 1 exit 1
 
-      - name: Locate built DLL (diagnostic)
+      - name: Locate built DLL
         shell: pwsh
         run: |
-          Write-Host "=== Built files ==="
+          Write-Host "=== Built DLLs ==="
           $dlls = Get-ChildItem -Recurse -Filter *.dll -Path .
           $dlls | Format-List FullName, Length
           if (-not $dlls) { Write-Error "NO DLL FOUND"; exit 1 }
